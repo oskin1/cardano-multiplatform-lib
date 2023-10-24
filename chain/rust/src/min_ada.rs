@@ -14,7 +14,7 @@ pub fn min_ada_required(
     let output_size = output.to_cbor_bytes().len();
 
     // constant from figure 5 in Babbage spec meant to represent the size the input in a UTXO
-    let constant_overhead = 160_u64;
+    let constant_overhead = 120_u64;
 
     // how many bytes the Coin part of the Value will take. can vary based on encoding used.
     let old_coin_size = 1 + fit_sz(
