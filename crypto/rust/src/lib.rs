@@ -1,14 +1,21 @@
-//use crate::byron::{AddrAttributes, AddressContent};
-use crate::chain_crypto::bech32::Bech32;
+// used in chain_core / chain_crypto
+#[macro_use]
+extern crate cfg_if;
+
+use std::convert::From;
+
+use cryptoxide::blake2b::Blake2b;
+pub use derivative::Derivative;
+use rand::rngs::OsRng;
+
 pub use cml_core::{
     error::{DeserializeError, DeserializeFailure},
     serialization::{Deserialize, Serialize, StringEncoding},
 };
-use cryptoxide::blake2b::Blake2b;
-pub use derivative::Derivative;
 use impl_mockchain::key;
-use rand::rngs::OsRng;
-use std::convert::From;
+
+//use crate::byron::{AddrAttributes, AddressContent};
+use crate::chain_crypto::bech32::Bech32;
 
 pub mod emip3;
 
@@ -18,24 +25,20 @@ pub mod chain_crypto;
 pub mod impl_mockchain;
 pub mod typed_bytes;
 
-// used in chain_core / chain_crypto
-#[macro_use]
-extern crate cfg_if;
-
 pub trait RawBytesEncoding {
     fn to_raw_bytes(&self) -> &[u8];
 
     fn from_raw_bytes(bytes: &[u8]) -> Result<Self, CryptoError>
-    where
-        Self: Sized;
+        where
+            Self: Sized;
 
     fn to_raw_hex(&self) -> String {
         hex::encode(self.to_raw_bytes())
     }
 
     fn from_raw_hex(hex_str: &str) -> Result<Self, CryptoError>
-    where
-        Self: Sized,
+        where
+            Self: Sized,
     {
         let bytes = hex::decode(hex_str)?;
         Self::from_raw_bytes(bytes.as_ref())
@@ -189,7 +192,7 @@ impl RawBytesEncoding for Bip32PrivateKey {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub struct Bip32PublicKey(pub chain_crypto::PublicKey<chain_crypto::Ed25519Bip32>);
 
@@ -346,7 +349,7 @@ impl RawBytesEncoding for PrivateKey {
 
 /// ED25519 key used as public key
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub struct PublicKey(pub chain_crypto::PublicKey<chain_crypto::Ed25519>);
 
@@ -543,6 +546,12 @@ macro_rules! impl_hash_type {
         impl From<[u8; $byte_count]> for $name {
             fn from(bytes: [u8; $byte_count]) -> Self {
                 Self(bytes)
+            }
+        }
+
+        impl Into<[u8; $byte_count]> for $name {
+            fn into(self) -> [u8; $byte_count] {
+                self.0
             }
         }
 
