@@ -448,7 +448,7 @@ impl Address {
                     _ => "addr",
                 };
                 let prefix_tail = match self.network_id()? {
-                    id if id == NetworkInfo::testnet().network_id() => "_test",
+                    id if id != NetworkInfo::mainnet().network_id() => "_test",
                     _ => "",
                 };
                 format!("{prefix_header}{prefix_tail}")
