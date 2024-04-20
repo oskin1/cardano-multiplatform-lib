@@ -336,7 +336,7 @@ impl BigInteger {
         }
     }
 
-    /// Converts to a u128
+    /// Converts to u128
     /// Returns None if the number was negative or too big for a u128
     pub fn as_u128(&self) -> Option<u128> {
         let (sign, u32_digits) = self.num.to_u32_digits();
@@ -346,13 +346,13 @@ impl BigInteger {
         match *u32_digits {
             [] => Some(0),
             [a] => Some(u128::from(a)),
-            [a, b] => Some(u128::from(b) | (u128::from(a) << 32)),
-            [a, b, c] => Some(u128::from(c) | (u128::from(b) << 32) | (u128::from(a) << 64)),
+            [a, b] => Some(u128::from(a) | (u128::from(b) << 32)),
+            [a, b, c] => Some(u128::from(a) | (u128::from(b) << 32) | (u128::from(c) << 64)),
             [a, b, c, d] => Some(
-                u128::from(d)
-                    | (u128::from(c) << 32)
-                    | (u128::from(b) << 64)
-                    | (u128::from(a) << 96),
+                u128::from(a)
+                    | (u128::from(b) << 32)
+                    | (u128::from(c) << 64)
+                    | (u128::from(d) << 96),
             ),
             _ => None,
         }
@@ -1003,6 +1003,20 @@ mod tests {
         assert_eq!(bytes, x.to_cbor_bytes().as_slice());
         assert_eq!(x.as_u128(), Some(u128::MIN));
         assert_eq!(x.to_string(), "0");
+    }
+
+    #[test]
+    fn bigint_uint_u128_roundtrip() {
+        let int = u64::MAX;
+        let x = BigInteger::from_int(&Int::Uint { value: int, encoding: None });
+        assert_eq!(x.as_u128(), Some(int as u128))
+    }
+
+    #[test]
+    fn bigint_uint_u128_roundtrip_min() {
+        let int = u64::MIN;
+        let x = BigInteger::from_int(&Int::Uint { value: int, encoding: None });
+        assert_eq!(x.as_u128(), Some(int as u128))
     }
 
     #[test]
