@@ -418,13 +418,20 @@ macro_rules! impl_wasm_cbor_api {
             }
 
             /**
+             * Serialize this type to CBOR bytes using canonical CBOR encodings
+             */
+            pub fn to_canonical_cbor_bytes(&self) -> Vec<u8> {
+                cml_core::serialization::Serialize::to_canonical_cbor_bytes(&self.0)
+            }
+
+            /**
              * Create this type from CBOR bytes
              */
-            pub fn from_cbor_bytes(cbor_bytes: &[u8]) -> Result<$wasm_name, JsError> {
+            pub fn from_cbor_bytes(cbor_bytes: &[u8]) -> Result<$wasm_name, wasm_bindgen::JsError> {
                 cml_core::serialization::Deserialize::from_cbor_bytes(cbor_bytes)
                     .map(Self)
                     .map_err(|e| {
-                        JsError::new(&format!(
+                        wasm_bindgen::JsError::new(&format!(
                             concat!(stringify!($wasm_name), "::from_bytes: {}"),
                             e
                         ))
@@ -441,13 +448,20 @@ macro_rules! impl_wasm_cbor_api {
             }
 
             /**
+             * Serialize this type to CBOR bytes using canonical CBOR encodings as hex bytes
+             */
+            pub fn to_canonical_cbor_hex(&self) -> String {
+                hex::encode(self.to_canonical_cbor_bytes())
+            }
+
+            /**
              * Create this type from the CBOR bytes encoded as a hex string.
              * This is useful for interfacing with CIP30
              */
-            pub fn from_cbor_hex(cbor_bytes: &str) -> Result<$wasm_name, JsError> {
+            pub fn from_cbor_hex(cbor_bytes: &str) -> Result<$wasm_name, wasm_bindgen::JsError> {
                 hex::decode(cbor_bytes)
                     .map_err(|e| {
-                        JsError::new(&format!(
+                        wasm_bindgen::JsError::new(&format!(
                             concat!(stringify!($wasm_name), "::from_cbor_hex: {}"),
                             e
                         ))
@@ -477,11 +491,11 @@ macro_rules! impl_wasm_cbor_event_serialize_api {
             /**
              * Create this type from CBOR bytes
              */
-            pub fn from_cbor_bytes(cbor_bytes: &[u8]) -> Result<$wasm_name, JsError> {
+            pub fn from_cbor_bytes(cbor_bytes: &[u8]) -> Result<$wasm_name, wasm_bindgen::JsError> {
                 cml_core::serialization::Deserialize::from_cbor_bytes(cbor_bytes)
                     .map(Self)
                     .map_err(|e| {
-                        JsError::new(&format!(
+                        wasm_bindgen::JsError::new(&format!(
                             concat!(stringify!($wasm_name), "::from_cbor_bytes: {}"),
                             e
                         ))
@@ -501,10 +515,10 @@ macro_rules! impl_wasm_cbor_event_serialize_api {
              * Create this type from the CBOR bytes encoded as a hex string.
              * This is useful for interfacing with CIP30
              */
-            pub fn from_cbor_hex(cbor_bytes: &str) -> Result<$wasm_name, JsError> {
+            pub fn from_cbor_hex(cbor_bytes: &str) -> Result<$wasm_name, wasm_bindgen::JsError> {
                 hex::decode(cbor_bytes)
                     .map_err(|e| {
-                        JsError::new(&format!(
+                        wasm_bindgen::JsError::new(&format!(
                             concat!(stringify!($wasm_name), "::from_cbor_hex: {}"),
                             e
                         ))
@@ -521,31 +535,74 @@ macro_rules! impl_wasm_json_api {
     ($wasm_name:ident) => {
         #[wasm_bindgen::prelude::wasm_bindgen]
         impl $wasm_name {
-            pub fn to_json(&self) -> Result<String, JsError> {
+            pub fn to_json(&self) -> Result<String, wasm_bindgen::JsError> {
                 serde_json::to_string_pretty(&self.0).map_err(|e| {
-                    JsError::new(&format!(
+                    wasm_bindgen::JsError::new(&format!(
                         concat!(stringify!($wasm_name), "::to_json: {}"),
                         e
                     ))
                 })
             }
 
-            pub fn to_js_value(&self) -> Result<JsValue, JsError> {
+            pub fn to_js_value(&self) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsError> {
                 serde_wasm_bindgen::to_value(&self.0).map_err(|e| {
-                    JsError::new(&format!(
+                    wasm_bindgen::JsError::new(&format!(
                         concat!(stringify!($wasm_name), "::to_js_value: {}"),
                         e
                     ))
                 })
             }
 
-            pub fn from_json(json: &str) -> Result<$wasm_name, JsError> {
+            pub fn from_json(json: &str) -> Result<$wasm_name, wasm_bindgen::JsError> {
                 serde_json::from_str(json).map(Self).map_err(|e| {
-                    JsError::new(&format!(
+                    wasm_bindgen::JsError::new(&format!(
                         concat!(stringify!($wasm_name), "::from_json: {}"),
                         e
                     ))
                 })
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! impl_raw_bytes_api {
+    ($rust:ty, $wasm:ident) => {
+        #[wasm_bindgen]
+        impl $wasm {
+            /**
+             * Direct raw bytes without any CBOR structure
+             */
+            pub fn to_raw_bytes(&self) -> Vec<u8> {
+                use cml_core_wasm::RawBytesEncoding;
+                self.0.to_raw_bytes().to_vec()
+            }
+
+            /**
+             * Parse from the direct raw bytes, without any CBOR structure
+             */
+            pub fn from_raw_bytes(bytes: &[u8]) -> Result<$wasm, wasm_bindgen::JsError> {
+                use cml_core_wasm::RawBytesEncoding;
+                <$rust>::from_raw_bytes(bytes).map(Self).map_err(Into::into)
+            }
+
+            /**
+             * Direct raw bytes without any CBOR structure, as a hex-encoded string
+             */
+            pub fn to_hex(&self) -> String {
+                use cml_core_wasm::RawBytesEncoding;
+                self.0.to_raw_hex()
+            }
+
+            /**
+             * Parse from a hex string of the direct raw bytes, without any CBOR structure
+             */
+            pub fn from_hex(input: &str) -> Result<$wasm, wasm_bindgen::JsError> {
+                use cml_core_wasm::RawBytesEncoding;
+                <$rust>::from_raw_hex(input)
+                    .map(Into::into)
+                    .map(Self)
+                    .map_err(Into::into)
             }
         }
     };

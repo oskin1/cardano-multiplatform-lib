@@ -1,6 +1,8 @@
+use crate::SubCoin;
+
 use super::{Int, Script, ScriptHash};
 use cml_chain::plutus::Language;
-use wasm_bindgen::prelude::{wasm_bindgen, JsError, JsValue};
+use wasm_bindgen::prelude::{wasm_bindgen, JsError};
 
 use cml_core_wasm::{impl_wasm_cbor_json_api, impl_wasm_conversions, impl_wasm_list};
 
@@ -85,3 +87,81 @@ impl NetworkId {
         self.0.network
     }
 }
+
+#[wasm_bindgen]
+impl SubCoin {
+    /// Converts base 10 floats to SubCoin.
+    /// This is the format used by blockfrost for ex units
+    /// Warning: If the passed in float was not meant to be base 10
+    /// this might result in a slightly inaccurate fraction.
+    pub fn from_base10_f32(f: f32) -> Self {
+        cml_chain::SubCoin::from_base10_f32(f).into()
+    }
+}
+
+// we provide direct From/Into conversions between NonemptySet<T> and TList
+// to allow the auto-generated code to work directly without changes
+macro_rules! impl_wasm_conversions_into {
+    ($rust:ty, $wasm:ty) => {
+        impl From<$rust> for $wasm {
+            fn from(native: $rust) -> Self {
+                Self(native.into())
+            }
+        }
+
+        #[allow(clippy::from_over_into)]
+        impl Into<$rust> for $wasm {
+            fn into(self) -> $rust {
+                self.0.into()
+            }
+        }
+    };
+}
+
+impl_wasm_conversions_into!(cml_chain::NonemptySetCertificate, crate::CertificateList);
+
+impl_wasm_conversions_into!(
+    cml_chain::NonemptySetPlutusV1Script,
+    crate::PlutusV1ScriptList
+);
+
+impl_wasm_conversions_into!(
+    cml_chain::NonemptySetPlutusV2Script,
+    crate::PlutusV2ScriptList
+);
+
+impl_wasm_conversions_into!(
+    cml_chain::NonemptySetPlutusV3Script,
+    crate::PlutusV3ScriptList
+);
+
+impl_wasm_conversions_into!(cml_chain::NonemptySetPlutusData, crate::PlutusDataList);
+
+impl_wasm_conversions_into!(
+    cml_chain::NonemptySetBootstrapWitness,
+    crate::BootstrapWitnessList
+);
+
+impl_wasm_conversions_into!(cml_chain::NonemptySetVkeywitness, crate::VkeywitnessList);
+
+impl_wasm_conversions_into!(
+    cml_chain::NonemptySetProposalProcedure,
+    crate::ProposalProcedureList
+);
+
+impl_wasm_conversions_into!(
+    cml_chain::NonemptySetTransactionInput,
+    crate::TransactionInputList
+);
+
+impl_wasm_conversions_into!(cml_chain::NonemptySetNativeScript, crate::NativeScriptList);
+
+impl_wasm_conversions_into!(
+    cml_chain::utils::NonemptySetRawBytes<cml_crypto::Ed25519KeyHash>,
+    crate::Ed25519KeyHashList
+);
+
+impl_wasm_conversions_into!(
+    cml_chain::SetCommitteeColdCredential,
+    crate::CommitteeColdCredentialList
+);

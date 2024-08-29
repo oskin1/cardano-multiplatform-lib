@@ -2,9 +2,11 @@ use super::certificate_builder::*;
 use super::input_builder::InputBuilderResult;
 use super::mint_builder::MintBuilderResult;
 use super::output_builder::{OutputBuilderError, SingleOutputBuilderResult};
+use super::proposal_builder::ProposalBuilderResult;
 use super::redeemer_builder::RedeemerBuilderError;
 use super::redeemer_builder::RedeemerSetBuilder;
 use super::redeemer_builder::RedeemerWitnessKey;
+use super::vote_builder::VoteBuilderResult;
 use super::withdrawal_builder::WithdrawalBuilderResult;
 use super::witness_builder::merge_fake_witness;
 use super::witness_builder::PlutusScriptWitness;
@@ -16,14 +18,15 @@ use crate::assets::MultiAsset;
 use crate::assets::{AssetArithmeticError, Mint};
 use crate::auxdata::AuxiliaryData;
 use crate::builders::output_builder::TransactionOutputBuilder;
-use crate::certs::Certificate;
+use crate::certs::{Certificate, Credential};
 use crate::crypto::hash::{calc_script_data_hash, hash_auxiliary_data, ScriptDataHashError};
 use crate::crypto::{BootstrapWitness, Vkeywitness};
 use crate::deposit::{internal_get_deposit, internal_get_implicit_input};
 use crate::fees::LinearFee;
+use crate::governance::{ProposalProcedure, VotingProcedures};
 use crate::min_ada::min_ada_required;
-use crate::plutus::PlutusData;
-use crate::plutus::{CostModels, ExUnits, Language, Redeemer};
+use crate::plutus::{CostModels, ExUnits, Language};
+use crate::plutus::{PlutusData, Redeemers};
 use crate::transaction::{
     DatumOption, ScriptRef, Transaction, TransactionBody, TransactionInput, TransactionOutput,
     TransactionWitnessSet,
@@ -34,14 +37,16 @@ use cml_core::ordered_hash_map::OrderedHashMap;
 use cml_core::serialization::{CBORReadLen, Deserialize};
 use cml_core::{ArithmeticError, DeserializeError, DeserializeFailure, Slot};
 use cml_crypto::{Ed25519KeyHash, ScriptDataHash, ScriptHash, Serialize};
-use fraction::Zero;
+use num::Zero;
 use rand::Rng;
 use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::io::{BufRead, Seek, Write};
 use std::ops::DerefMut;
 
-// for enums:
+#[cfg(not(feature = "used_from_wasm"))]
+use noop_proc_macro::wasm_bindgen;
+#[cfg(feature = "used_from_wasm")]
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /**
@@ -113,6 +118,7 @@ impl WitnessBuilders {
         let redeemers = self.redeemer_set_builder.build(true)?;
         let mut witness_set_clone = self.witness_set_builder.clone();
         redeemers
+            .to_flat_format()
             .into_iter()
             .for_each(|r| witness_set_clone.add_redeemer(r));
 
@@ -182,8 +188,8 @@ pub enum TxBuilderError {
         "Multiasset values not supported by RandomImprove. Please use RandomImproveMultiAsset"
     )]
     RandomImproveCantContainMultiasset,
-    #[error("UTxO Balance Insufficient")]
-    UTxOBalanceInsufficient,
+    #[error("UTxO Balance Insufficient. Inputs: {0:?}, Outputs: {1:?}")]
+    UTxOBalanceInsufficient(Value, Value),
     #[error("NFTs too large for change output")]
     NFTTooLargeForChange,
     #[error("Collateral can only be payment keys (scripts not allowed)")]
@@ -221,10 +227,43 @@ fn min_fee(tx_builder: &TransactionBuilder) -> Result<Coin, TxBuilderError> {
 fn min_fee_with_exunits(tx_builder: &TransactionBuilder) -> Result<Coin, TxBuilderError> {
     let full_tx = fake_full_tx(tx_builder, tx_builder.build_body()?)?;
     // we can't know the of scripts yet as they can't be calculated until we build the tx
+
+    fn ref_script_orig_size_builder(utxo: &TransactionUnspentOutput) -> Option<(ScriptHash, u64)> {
+        utxo.output.script_ref().map(|script_ref| {
+            (
+                script_ref.hash(),
+                script_ref
+                    .raw_plutus_bytes()
+                    .expect("TODO: handle this")
+                    .len() as u64,
+            )
+        })
+    }
+
+    let ref_script_orig_sizes: HashMap<ScriptHash, u64> =
+        if let Some(ref_inputs) = &tx_builder.reference_inputs {
+            ref_inputs
+                .iter()
+                .filter_map(ref_script_orig_size_builder)
+                .collect()
+        } else {
+            HashMap::default()
+        };
+
+    let mut total_ref_script_size = 0;
+    for utxo in tx_builder.inputs.iter() {
+        if let Some(Credential::Script { hash, .. }) = utxo.output.address().payment_cred() {
+            if let Some(orig_size) = ref_script_orig_sizes.get(hash) {
+                total_ref_script_size += *orig_size;
+            }
+        }
+    }
+
     crate::fees::min_fee(
         &full_tx,
         &tx_builder.config.fee_algo,
         &tx_builder.config.ex_unit_prices,
+        total_ref_script_size,
     )
     .map_err(Into::into)
 }
@@ -362,7 +401,7 @@ impl TransactionBuilderConfigBuilder {
             cost_models: if self.cost_models.is_some() {
                 self.cost_models.unwrap()
             } else {
-                CostModels::new()
+                CostModels::default()
             },
             _collateral_percentage: self.collateral_percentage.ok_or(
                 TxBuilderError::UninitializedField(TxBuilderConfigField::CollateralPercentage),
@@ -384,6 +423,8 @@ pub struct TransactionBuilder {
     ttl: Option<Slot>, // absolute slot number
     certs: Option<Vec<Certificate>>,
     withdrawals: Option<Withdrawals>,
+    proposals: Option<Vec<ProposalProcedure>>,
+    votes: Option<VotingProcedures>,
     auxiliary_data: Option<AuxiliaryData>,
     validity_start_interval: Option<Slot>,
     mint: Option<Mint>,
@@ -447,7 +488,10 @@ impl TransactionBuilder {
                 // a specific output, so the improvement algorithm we do above does not apply here.
                 while input_total.coin < output_total.coin {
                     if available_indices.is_empty() {
-                        return Err(TxBuilderError::UTxOBalanceInsufficient);
+                        return Err(TxBuilderError::UTxOBalanceInsufficient(
+                            input_total.clone(),
+                            output_total.clone(),
+                        ));
                     }
                     let i = *available_indices
                         .iter()
@@ -516,7 +560,10 @@ impl TransactionBuilder {
                 // a specific output, so the improvement algorithm we do above does not apply here.
                 while input_total.coin < output_total.coin {
                     if available_indices.is_empty() {
-                        return Err(TxBuilderError::UTxOBalanceInsufficient);
+                        return Err(TxBuilderError::UTxOBalanceInsufficient(
+                            input_total.clone(),
+                            output_total.clone(),
+                        ));
                     }
                     let i = *available_indices
                         .iter()
@@ -571,7 +618,10 @@ impl TransactionBuilder {
         if by(input_total).unwrap_or_else(u64::zero)
             < by(output_total).expect("do not call on asset types that aren't in the output")
         {
-            return Err(TxBuilderError::UTxOBalanceInsufficient);
+            return Err(TxBuilderError::UTxOBalanceInsufficient(
+                input_total.clone(),
+                output_total.clone(),
+            ));
         }
 
         Ok(())
@@ -623,7 +673,10 @@ impl TransactionBuilder {
             let needed = by(output.amount()).unwrap();
             while added < needed {
                 if relevant_indices.is_empty() {
-                    return Err(TxBuilderError::UTxOBalanceInsufficient);
+                    return Err(TxBuilderError::UTxOBalanceInsufficient(
+                        input_total.clone(),
+                        output_total.clone(),
+                    ));
                 }
                 let random_index = rng.gen_range(0..relevant_indices.len());
                 let i = relevant_indices.swap_remove(random_index);
@@ -685,7 +738,10 @@ impl TransactionBuilder {
         Ok(())
     }
 
-    pub fn add_input(&mut self, result: InputBuilderResult) -> Result<(), TxBuilderError> {
+    pub fn add_input(&mut self, mut result: InputBuilderResult) -> Result<(), TxBuilderError> {
+        if let Some(reference_inputs) = &self.reference_inputs {
+            result.required_wits.remove_ref_scripts(reference_inputs);
+        }
         if let Some(script_ref) = result.utxo_info.script_ref() {
             self.witness_builders
                 .witness_set_builder
@@ -714,21 +770,31 @@ impl TransactionBuilder {
                 data
             {
                 required_signers
-                    .into_iter()
-                    .for_each(|signer| self.add_required_signer(signer));
+                    .iter()
+                    .for_each(|signer| self.add_required_signer(*signer));
 
                 match &script_witness.script {
-                    PlutusScriptWitness::Ref(ref_script) => {
-                        if self
+                    PlutusScriptWitness::Ref(ref_script_hash) => {
+                        // it could also be a reference script - check those too
+                        // TODO: do we want to change how we store ref scripts to cache the hash to avoid re-hashing (slow on wasm) every time an input is added?
+                        if !self
                             .witness_builders
                             .witness_set_builder
                             .required_wits
                             .script_refs
-                            .get(ref_script)
-                            .is_none()
+                            .contains(ref_script_hash)
+                            && !self.reference_inputs.iter().any(|ref_inputs| {
+                                ref_inputs.iter().any(|ref_input| {
+                                    ref_input
+                                        .output
+                                        .script_ref()
+                                        .iter()
+                                        .any(|ref_script| ref_script.hash() == *ref_script_hash)
+                                })
+                            })
                         {
                             Err(TxBuilderError::RefScriptNotFound(
-                                *ref_script,
+                                *ref_script_hash,
                                 self.witness_builders
                                     .witness_set_builder
                                     .required_wits
@@ -769,6 +835,7 @@ impl TransactionBuilder {
             .ok_or_else(|| ArithmeticError::IntegerOverflow.into())
     }
 
+    /// Add a reference input. Must be called BEFORE adding anything (inputs, certs, etc) that refer to this reference input.
     pub fn add_reference_input(&mut self, utxo: TransactionUnspentOutput) {
         let reference_inputs = match self.reference_inputs.as_mut() {
             None => {
@@ -852,7 +919,10 @@ impl TransactionBuilder {
         self.validity_start_interval = Some(validity_start_interval)
     }
 
-    pub fn add_cert(&mut self, result: CertificateBuilderResult) {
+    pub fn add_cert(&mut self, mut result: CertificateBuilderResult) {
+        if let Some(reference_inputs) = &self.reference_inputs {
+            result.required_wits.remove_ref_scripts(reference_inputs);
+        }
         self.witness_builders.redeemer_set_builder.add_cert(&result);
         if self.certs.is_none() {
             self.certs = Some(Vec::new());
@@ -867,8 +937,68 @@ impl TransactionBuilder {
                 .add_input_aggregate_fake_witness_data(&data);
             if let InputAggregateWitnessData::PlutusScript(_, required_signers, _) = data {
                 required_signers
-                    .into_iter()
-                    .for_each(|signer| self.add_required_signer(signer));
+                    .iter()
+                    .for_each(|signer| self.add_required_signer(*signer));
+            }
+        }
+        self.witness_builders
+            .witness_set_builder
+            .add_required_wits(result.required_wits);
+    }
+
+    pub fn add_proposal(&mut self, mut result: ProposalBuilderResult) {
+        if let Some(reference_inputs) = &self.reference_inputs {
+            result.required_wits.remove_ref_scripts(reference_inputs);
+        }
+        self.witness_builders
+            .redeemer_set_builder
+            .add_proposal(&result);
+        if self.proposals.is_none() {
+            self.proposals = Some(Vec::new());
+        }
+        self.proposals
+            .as_mut()
+            .unwrap()
+            .append(&mut result.proposals);
+        for data in result.aggregate_witnesses {
+            self.witness_builders
+                .witness_set_builder
+                .add_input_aggregate_real_witness_data(&data);
+            self.witness_builders
+                .fake_required_witnesses
+                .add_input_aggregate_fake_witness_data(&data);
+            if let InputAggregateWitnessData::PlutusScript(_, required_signers, _) = data {
+                required_signers
+                    .iter()
+                    .for_each(|signer| self.add_required_signer(*signer));
+            }
+        }
+        self.witness_builders
+            .witness_set_builder
+            .add_required_wits(result.required_wits);
+    }
+
+    pub fn add_vote(&mut self, mut result: VoteBuilderResult) {
+        if let Some(reference_inputs) = &self.reference_inputs {
+            result.required_wits.remove_ref_scripts(reference_inputs);
+        }
+        self.witness_builders.redeemer_set_builder.add_vote(&result);
+        if let Some(votes) = self.votes.as_mut() {
+            votes.extend(result.votes.take());
+        } else {
+            self.votes = Some(result.votes);
+        }
+        for data in result.aggregate_witnesses {
+            self.witness_builders
+                .witness_set_builder
+                .add_input_aggregate_real_witness_data(&data);
+            self.witness_builders
+                .fake_required_witnesses
+                .add_input_aggregate_fake_witness_data(&data);
+            if let InputAggregateWitnessData::PlutusScript(_, required_signers, _) = data {
+                required_signers
+                    .iter()
+                    .for_each(|signer| self.add_required_signer(*signer));
             }
         }
         self.witness_builders
@@ -880,7 +1010,10 @@ impl TransactionBuilder {
         self.withdrawals.clone()
     }
 
-    pub fn add_withdrawal(&mut self, result: WithdrawalBuilderResult) {
+    pub fn add_withdrawal(&mut self, mut result: WithdrawalBuilderResult) {
+        if let Some(reference_inputs) = &self.reference_inputs {
+            result.required_wits.remove_ref_scripts(reference_inputs);
+        }
         self.witness_builders
             .redeemer_set_builder
             .add_reward(&result);
@@ -900,8 +1033,8 @@ impl TransactionBuilder {
                 .add_input_aggregate_fake_witness_data(&data);
             if let InputAggregateWitnessData::PlutusScript(_, required_signers, _) = data {
                 required_signers
-                    .into_iter()
-                    .for_each(|signer| self.add_required_signer(signer));
+                    .iter()
+                    .for_each(|signer| self.add_required_signer(*signer));
             }
         }
         self.witness_builders
@@ -928,7 +1061,10 @@ impl TransactionBuilder {
         }
     }
 
-    pub fn add_mint(&mut self, result: MintBuilderResult) -> Result<(), TxBuilderError> {
+    pub fn add_mint(&mut self, mut result: MintBuilderResult) -> Result<(), TxBuilderError> {
+        if let Some(reference_inputs) = &self.reference_inputs {
+            result.required_wits.remove_ref_scripts(reference_inputs);
+        }
         self.witness_builders.redeemer_set_builder.add_mint(&result);
         self.witness_builders
             .witness_set_builder
@@ -956,8 +1092,8 @@ impl TransactionBuilder {
                 .add_input_aggregate_fake_witness_data(&data);
             if let InputAggregateWitnessData::PlutusScript(_, required_signers, _) = data {
                 required_signers
-                    .into_iter()
-                    .for_each(|signer| self.add_required_signer(signer));
+                    .iter()
+                    .for_each(|signer| self.add_required_signer(*signer));
             }
         }
         Ok(())
@@ -977,6 +1113,8 @@ impl TransactionBuilder {
             ttl: None,
             certs: None,
             withdrawals: None,
+            proposals: None,
+            votes: None,
             auxiliary_data: None,
             validity_start_interval: None,
             mint: None,
@@ -990,9 +1128,12 @@ impl TransactionBuilder {
         }
     }
 
-    pub fn add_collateral(&mut self, result: InputBuilderResult) -> Result<(), TxBuilderError> {
+    pub fn add_collateral(&mut self, mut result: InputBuilderResult) -> Result<(), TxBuilderError> {
         if result.aggregate_witness.is_some() {
             return Err(TxBuilderError::CollateralMustBePayment);
+        }
+        if let Some(reference_inputs) = &self.reference_inputs {
+            result.required_wits.remove_ref_scripts(reference_inputs);
         }
         let new_input = TransactionUnspentOutput {
             input: result.input,
@@ -1134,6 +1275,7 @@ impl TransactionBuilder {
     pub fn get_deposit(&self) -> Result<Coin, TxBuilderError> {
         internal_get_deposit(
             self.certs.as_deref(),
+            self.proposals.as_deref(),
             self.config.pool_deposit,
             self.config.key_deposit,
         )
@@ -1173,6 +1315,8 @@ impl TransactionBuilder {
 
         let redeemers = self.witness_builders.redeemer_set_builder.build(true)?;
         let has_dummy_exunit = redeemers
+            .clone()
+            .to_flat_format()
             .iter()
             .any(|redeemer| redeemer.ex_units == ExUnits::dummy());
 
@@ -1217,7 +1361,11 @@ impl TransactionBuilder {
                         });
                     calc_script_data_hash(
                         &redeemers,
-                        &self.witness_builders.witness_set_builder.get_plutus_datum(),
+                        &self
+                            .witness_builders
+                            .witness_set_builder
+                            .get_plutus_datum()
+                            .into(),
                         &self.config.cost_models,
                         &languages.iter().copied().collect::<Vec<_>>(),
                         None,
@@ -1230,33 +1378,43 @@ impl TransactionBuilder {
                 .inputs
                 .iter()
                 .map(|tx_builder_input| tx_builder_input.input.clone())
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             outputs: self.outputs.clone(),
             fee,
             ttl: self.ttl,
-            certs: self.certs.clone(),
+            certs: self.certs.as_ref().map(|certs| certs.clone().into()),
             withdrawals: self.withdrawals.clone(),
             auxiliary_data_hash: self.auxiliary_data.as_ref().map(hash_auxiliary_data),
             validity_interval_start: self.validity_start_interval,
             mint: self.mint.clone(),
             script_data_hash,
-            collateral_inputs: self
-                .collateral
-                .as_ref()
-                .map(|collateral| collateral.iter().map(|c| c.input.clone()).collect()),
+            collateral_inputs: self.collateral.as_ref().map(|collateral| {
+                collateral
+                    .iter()
+                    .map(|c| c.input.clone())
+                    .collect::<Vec<_>>()
+                    .into()
+            }),
             required_signers: self
                 .required_signers
                 .as_ref()
-                .map(|set| set.iter().cloned().collect()),
+                .map(|set| set.iter().cloned().collect::<Vec<_>>().into()),
             network_id: self.network_id,
             collateral_return: self.collateral_return.clone(),
             total_collateral: self.calc_collateral_total()?,
-            reference_inputs: self
-                .reference_inputs
+            reference_inputs: self.reference_inputs.as_ref().map(|inputs| {
+                inputs
+                    .iter()
+                    .map(|utxo| utxo.input.clone())
+                    .collect::<Vec<_>>()
+                    .into()
+            }),
+            voting_procedures: self.votes.clone(),
+            proposal_procedures: self
+                .proposals
                 .as_ref()
-                .map(|inputs| inputs.iter().map(|utxo| utxo.input.clone()).collect()),
-            voting_procedures: None,
-            proposal_procedures: None,
+                .map(|proposals| proposals.clone().into()),
             current_treasury_value: None,
             donation: None,
             encodings: None,
@@ -1394,7 +1552,7 @@ impl TxRedeemerBuilder {
     /// Builds the transaction and moves to the next step where any real witness can be added
     /// NOTE: is_valid set to true
     /// Will NOT require you to have set required signers & witnesses
-    pub fn build(&self) -> Result<Vec<Redeemer>, RedeemerBuilderError> {
+    pub fn build(&self) -> Result<Redeemers, RedeemerBuilderError> {
         self.witness_builders.redeemer_set_builder.build(true)
     }
 
@@ -1574,7 +1732,10 @@ pub fn add_change_if_needed(
             builder.set_fee(input_total.checked_sub(&output_total)?.coin);
             Ok(false)
         }
-        Some(Ordering::Less) => Err(TxBuilderError::UTxOBalanceInsufficient),
+        Some(Ordering::Less) => Err(TxBuilderError::UTxOBalanceInsufficient(
+            input_total.clone(),
+            output_total.clone(),
+        )),
         Some(Ordering::Greater) => {
             let change_estimator = input_total.checked_sub(&output_total)?;
             if change_estimator.has_multiassets() {
@@ -1957,7 +2118,7 @@ mod tests {
     }
 
     fn create_linear_fee(coefficient: u64, constant: u64) -> LinearFee {
-        LinearFee::new(coefficient, constant)
+        LinearFee::new(coefficient, constant, 0)
     }
 
     fn create_default_linear_fee() -> LinearFee {
@@ -3797,7 +3958,7 @@ mod tests {
     #[flaky_test::flaky_test]
     fn tx_builder_cip2_random_improve_when_using_all_available_inputs() {
         // we have a = 1 to test increasing fees when more inputs are added
-        let linear_fee = LinearFee::new(1, 0);
+        let linear_fee = LinearFee::new(1, 0, 0);
         let cfg = TransactionBuilderConfigBuilder::default()
             .fee_algo(linear_fee)
             .pool_deposit(0)
@@ -3841,7 +4002,7 @@ mod tests {
     #[flaky_test::flaky_test]
     fn tx_builder_cip2_random_improve_adds_enough_for_fees() {
         // we have a = 1 to test increasing fees when more inputs are added
-        let linear_fee = LinearFee::new(1, 0);
+        let linear_fee = LinearFee::new(1, 0, 0);
         let cfg = TransactionBuilderConfigBuilder::default()
             .fee_algo(linear_fee)
             .pool_deposit(0)
@@ -4085,14 +4246,19 @@ mod tests {
 
         let mut witness_set = TransactionWitnessSet::new();
 
-        witness_set.vkeywitnesses = Some(vec![make_vkey_witness(
-            &hash_transaction(&body),
-            &PrivateKey::from_normal_bytes(
-                &hex::decode("c660e50315d76a53d80732efda7630cae8885dfb85c46378684b3c6103e1284a")
+        witness_set.vkeywitnesses = Some(
+            vec![make_vkey_witness(
+                &hash_transaction(&body),
+                &PrivateKey::from_normal_bytes(
+                    &hex::decode(
+                        "c660e50315d76a53d80732efda7630cae8885dfb85c46378684b3c6103e1284a",
+                    )
                     .unwrap(),
-            )
-            .unwrap(),
-        )]);
+                )
+                .unwrap(),
+            )]
+            .into(),
+        );
 
         let final_tx = Transaction::new(body, witness_set, true, None);
         let deser_t = Transaction::from_cbor_bytes(&final_tx.to_cbor_bytes()).unwrap();
@@ -4105,7 +4271,7 @@ mod tests {
 
     #[test]
     fn add_change_splits_change_into_multiple_outputs_when_nfts_overflow_output_size() {
-        let linear_fee = LinearFee::new(0, 1);
+        let linear_fee = LinearFee::new(0, 1, 0);
         let max_value_size = 100; // super low max output size to test with fewer assets
         let mut tx_builder = TransactionBuilder::new(
             TransactionBuilderConfigBuilder::default()
@@ -5129,7 +5295,7 @@ mod tests {
                     ),
                     PlutusData::from_cbor_bytes(&hex::decode("D866820380").unwrap()).unwrap(),
                 ),
-                required_signers,
+                required_signers.into(),
                 PlutusData::from_cbor_bytes(&hex::decode("d866820181d866820083581c5627217786eb781fbfb51911a253f4d250fdbfdcf1198e70d35985a9443330353301").unwrap()).unwrap()
             ).unwrap()).unwrap();
         }
@@ -5277,7 +5443,7 @@ mod tests {
                     ),
                     PlutusData::from_cbor_bytes(&hex::decode("D866820380").unwrap()).unwrap(),
                 ),
-                required_signers,
+                required_signers.into(),
                 PlutusData::from_cbor_bytes(&hex::decode("d866820181d866820083581c5627217786eb781fbfb51911a253f4d250fdbfdcf1198e70d35985a9443330353301").unwrap()).unwrap()
             ).unwrap()).unwrap();
         }
@@ -5455,7 +5621,7 @@ mod tests {
                     ),
                     PlutusData::from_cbor_bytes(&hex::decode("D866820380").unwrap()).unwrap(),
                 ),
-                required_signers,
+                required_signers.into(),
                 PlutusData::from_cbor_bytes(&hex::decode("d866820181d866820083581c5627217786eb781fbfb51911a253f4d250fdbfdcf1198e70d35985a9443330353301").unwrap()).unwrap()
             ).unwrap()).unwrap();
         }
@@ -5713,7 +5879,7 @@ mod tests {
                     PlutusScriptWitness::from(script_hash),
                     PlutusData::new_bytes(vec![]),
                 ),
-                vec![],
+                vec![].into(),
                 PlutusData::from_cbor_bytes(&hex::decode("D866820380").unwrap()).unwrap(),
             )
             .unwrap()

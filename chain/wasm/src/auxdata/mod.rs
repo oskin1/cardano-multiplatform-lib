@@ -3,7 +3,7 @@
 
 use super::{NativeScriptList, PlutusV1ScriptList, PlutusV2ScriptList, PlutusV3ScriptList};
 use cml_core_wasm::{impl_wasm_cbor_json_api, impl_wasm_conversions};
-use wasm_bindgen::prelude::{wasm_bindgen, JsError, JsValue};
+use wasm_bindgen::prelude::wasm_bindgen;
 
 pub mod metadata;
 pub mod utils;
@@ -26,9 +26,9 @@ impl AuxiliaryData {
         ))
     }
 
-    pub fn new_shelley_m_a(shelley_m_a: &ShelleyMaFormatAuxData) -> Self {
-        Self(cml_chain::auxdata::AuxiliaryData::new_shelley_m_a(
-            shelley_m_a.clone().into(),
+    pub fn new_shelley_ma(shelley_ma: &ShelleyMAFormatAuxData) -> Self {
+        Self(cml_chain::auxdata::AuxiliaryData::new_shelley_ma(
+            shelley_ma.clone().into(),
         ))
     }
 
@@ -53,10 +53,10 @@ impl AuxiliaryData {
         }
     }
 
-    pub fn as_shelley_m_a(&self) -> Option<ShelleyMaFormatAuxData> {
+    pub fn as_shelley_ma(&self) -> Option<ShelleyMAFormatAuxData> {
         match &self.0 {
-            cml_chain::auxdata::AuxiliaryData::ShelleyMA(shelley_m_a) => {
-                Some(shelley_m_a.clone().into())
+            cml_chain::auxdata::AuxiliaryData::ShelleyMA(shelley_ma) => {
+                Some(shelley_ma.clone().into())
             }
             _ => None,
         }
@@ -145,17 +145,17 @@ pub type ShelleyFormatAuxData = Metadata;
 
 #[derive(Clone, Debug)]
 #[wasm_bindgen]
-pub struct ShelleyMaFormatAuxData(cml_chain::auxdata::ShelleyMaFormatAuxData);
+pub struct ShelleyMAFormatAuxData(cml_chain::auxdata::ShelleyMAFormatAuxData);
 
-impl_wasm_cbor_json_api!(ShelleyMaFormatAuxData);
+impl_wasm_cbor_json_api!(ShelleyMAFormatAuxData);
 
 impl_wasm_conversions!(
-    cml_chain::auxdata::ShelleyMaFormatAuxData,
-    ShelleyMaFormatAuxData
+    cml_chain::auxdata::ShelleyMAFormatAuxData,
+    ShelleyMAFormatAuxData
 );
 
 #[wasm_bindgen]
-impl ShelleyMaFormatAuxData {
+impl ShelleyMAFormatAuxData {
     pub fn transaction_metadata(&self) -> Metadata {
         self.0.transaction_metadata.clone().into()
     }
@@ -165,7 +165,7 @@ impl ShelleyMaFormatAuxData {
     }
 
     pub fn new(transaction_metadata: &Metadata, auxiliary_scripts: &NativeScriptList) -> Self {
-        Self(cml_chain::auxdata::ShelleyMaFormatAuxData::new(
+        Self(cml_chain::auxdata::ShelleyMAFormatAuxData::new(
             transaction_metadata.clone().into(),
             auxiliary_scripts.clone().into(),
         ))
