@@ -1048,6 +1048,36 @@ mod tests {
     }
 
     #[test]
+    fn bigint_uint_u128_roundtrip() {
+        let int = 462_164_030_739_157_517;
+        let x = BigInteger::from_int(&Int::Uint {
+            value: int,
+            encoding: None,
+        });
+        assert_eq!(x.as_u128(), Some(int as u128))
+    }
+
+    #[test]
+    fn bigint_uint_u128_roundtrip_min() {
+        let int = u64::MIN;
+        let x = BigInteger::from_int(&Int::Uint {
+            value: int,
+            encoding: None,
+        });
+        assert_eq!(x.as_u128(), Some(int as u128))
+    }
+
+    #[test]
+    fn bigint_uint_u128_roundtrip_max() {
+        let int = u64::MAX;
+        let x = BigInteger::from_int(&Int::Uint {
+            value: int,
+            encoding: None,
+        });
+        assert_eq!(x.as_u128(), Some(int as u128))
+    }
+
+    #[test]
     fn bigint_uint_u128_min() {
         let bytes = [0x00];
         let x = BigInteger::from_cbor_bytes(&bytes).unwrap();
