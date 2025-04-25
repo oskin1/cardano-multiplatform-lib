@@ -1211,7 +1211,7 @@ impl TransactionBuilder {
     pub fn network_id(&self) -> Option<NetworkId> {
         self.network_id
     }
-    
+
     pub fn get_outputs(&self) -> &Vec<TransactionOutput> {
         &self.outputs
     }
@@ -1682,6 +1682,10 @@ impl SignedTxBuilder {
 
     pub fn body(&self) -> TransactionBody {
         self.body.clone()
+    }
+
+    pub fn body_ref(&self) -> &TransactionBody {
+        &self.body
     }
 
     pub fn witness_set(&self) -> TransactionWitnessSetBuilder {
