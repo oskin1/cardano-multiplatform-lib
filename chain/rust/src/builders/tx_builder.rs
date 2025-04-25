@@ -1211,6 +1211,10 @@ impl TransactionBuilder {
     pub fn network_id(&self) -> Option<NetworkId> {
         self.network_id
     }
+    
+    pub fn get_outputs(&self) -> &Vec<TransactionOutput> {
+        &self.outputs
+    }
 
     /// does not include refunds or withdrawals
     pub fn get_explicit_input(&self) -> Result<Value, TxBuilderError> {
