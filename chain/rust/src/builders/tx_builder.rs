@@ -1211,6 +1211,10 @@ impl TransactionBuilder {
     pub fn network_id(&self) -> Option<NetworkId> {
         self.network_id
     }
+    
+    pub fn get_inputs(&self) -> &Vec<TransactionUnspentOutput> {
+        &self.inputs
+    }
 
     pub fn get_outputs(&self) -> &Vec<TransactionOutput> {
         &self.outputs
