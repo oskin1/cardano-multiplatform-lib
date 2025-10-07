@@ -1429,7 +1429,7 @@ impl TxRedeemerBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SignedTxBuilder {
     body: TransactionBody,
     witness_set: TransactionWitnessSetBuilder,
