@@ -1059,6 +1059,16 @@ impl TransactionBuilder {
         self.network_id
     }
 
+    /// get current number of inputs set in the builder.
+    pub fn num_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    /// get current number of outputs set in the builder.
+    pub fn num_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
     /// does not include refunds or withdrawals
     pub fn get_explicit_input(&self) -> Result<Value, TxBuilderError> {
         self.inputs
@@ -1419,7 +1429,7 @@ impl TxRedeemerBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SignedTxBuilder {
     body: TransactionBody,
     witness_set: TransactionWitnessSetBuilder,
