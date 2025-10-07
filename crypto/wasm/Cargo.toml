@@ -16,6 +16,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 cml-crypto = { path = "../rust", version = "4.0.2" }
 cbor_event = "2.2.0"
-wasm-bindgen = { version = "=0.2.83", features = ["serde-serialize"] }
-linked-hash-map = "0.5.3"
+wasm-bindgen = { version = "=0.2.89", features = ["serde-serialize"] }
+linked-hash-map = {version = "0.5.3", features = ["serde_impl"]}
 serde_json = "1.0.57"
