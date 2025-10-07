@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use super::{
     certificate_builder::CertificateBuilderResult, input_builder::InputBuilderResult,
     mint_builder::MintBuilderResult, proposal_builder::ProposalBuilderResult,
@@ -11,7 +13,7 @@ use crate::{
 };
 use std::{collections::BTreeMap, fmt::Debug};
 
-#[derive(Clone, Copy, PartialOrd, Ord, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialOrd, Ord, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RedeemerWitnessKey {
     tag: RedeemerTag,
     index: u64,

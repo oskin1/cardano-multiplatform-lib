@@ -1211,7 +1211,7 @@ impl TransactionBuilder {
     pub fn network_id(&self) -> Option<NetworkId> {
         self.network_id
     }
-    
+
     pub fn get_inputs(&self) -> &Vec<TransactionUnspentOutput> {
         &self.inputs
     }
@@ -1601,7 +1601,7 @@ impl TxRedeemerBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SignedTxBuilder {
     body: TransactionBody,
     witness_set: TransactionWitnessSetBuilder,

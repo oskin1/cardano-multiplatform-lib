@@ -1,4 +1,5 @@
 use linked_hash_map::LinkedHashMap;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
     fmt::Debug,
@@ -99,7 +100,7 @@ impl InputAggregateWitnessData {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RequiredWitnessSet {
     // note: the real key type for these is Vkey
     // but cryptographically these should be equivalent and Ed25519KeyHash is more flexible
@@ -248,7 +249,7 @@ impl RequiredWitnessSet {
 }
 
 /// Builder de-duplicates witnesses as they are added
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct TransactionWitnessSetBuilder {
     // See Alonzo spec section 3.1 which defines the keys for these types
     pub vkeys: HashMap<Vkey, Vkeywitness>,
